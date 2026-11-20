@@ -53,6 +53,8 @@ Outputs under the build directory:
 
 - `include/nccl_device_wrapper.h`: C declarations of the exported functions.
 - `lib/librccl_device.bc`: LLVM bitcode library.
+- `lib/librccl_device_dsl.bc`: the entry points in `nccl_device_dsl.h`, whose arguments are
+  all integer scalars, for DSLs such as FlyDSL. Code object version 6.
 
 `librccl_device.bc` exports only the functions declared in `nccl_device_wrapper.h`
 (`RCCL_DEVICE_BC_PUBLIC_API` in `CMakeLists.txt` and the `Makefile`), not the `ncclIr*`

@@ -79,6 +79,7 @@ BITCODE_CXX_STD  ?= gnu++17
 # set to. The intermediates live under OBJDIR, which clean removes wholesale.
 FINAL_BC       := $(LIBDIR)/librccl_device.bc
 FINAL_LTO_IR   := $(LIBDIR)/librccl_device.ltoir
+FINAL_DSL_BC   := $(LIBDIR)/librccl_device_dsl.bc
 
 WRAPPER_HEADER := $(INCDIR)/nccl_device_wrapper.h
 
@@ -186,7 +187,14 @@ $(FINAL_BC): $(LLVM_IR_FILE)
 	@echo "Assembling final bitcode -> $@"
 	$(LLVM_AS) $< -o $@
 
-llvm_ir: $(FINAL_BC) $(OPTIMIZED_BC) $(WRAPPER_HEADER)
+# Scalar-argument entry points for DSLs: see librccl_device_dsl.bc in CMakeLists.txt.
+$(FINAL_DSL_BC): nccl_device_dsl__impl.h nccl_device_dsl.h check_hipify
+	@mkdir -p $(LIBDIR)
+	@echo "Generating $@ for $(BITCODE_LIB_ARCH)..."
+	$(CLANG) -c -emit-llvm -O2 -fgpu-rdc -mcode-object-version=6 -DDWORDX4_INTRINSICS_FORCE_OFF \
+		$(COMMON_CLANG_FLAGS) nccl_device_dsl__impl.h -o $@
+
+llvm_ir: $(FINAL_BC) $(OPTIMIZED_BC) $(WRAPPER_HEADER) $(FINAL_DSL_BC)
 	@echo "RCCL LLVM IR and bitcode generated successfully:"
 	@echo "  C++ Standard:      $(BITCODE_CXX_STD)"
 	@echo "  GPU Architecture:  $(BITCODE_LIB_ARCH)"
@@ -271,7 +279,7 @@ endif
 build: llvm_ir ltoir
 
 clean:
-	rm -rf $(OBJDIR) $(FINAL_BC) $(FINAL_LTO_IR) $(WRAPPER_HEADER)
+	rm -rf $(OBJDIR) $(FINAL_BC) $(FINAL_LTO_IR) $(FINAL_DSL_BC) $(WRAPPER_HEADER)
 
 .PHONY: llvm_ir ltoir build clean
 

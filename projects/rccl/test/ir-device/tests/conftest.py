@@ -81,6 +81,11 @@ NRANKS = int(os.environ.get("IR_GIN_NRANKS", "2"))
 # GPU. Override with IR_GIN_GPUS="2,3" to target specific devices.
 IR_GIN_GPUS = os.environ.get("IR_GIN_GPUS", ",".join(str(i) for i in range(NRANKS)))
 
+# --- Scalar-argument entry points for DSLs (librccl_device_dsl.bc) ---
+DSL_BITCODE = os.path.join(RCCL_BUILD, "lib", "librccl_device_dsl.bc")
+DSL_MPI_TEST_SRC = os.path.join(IR_DIR, "test", "IR_dsl_mpi_test.cpp")
+DSL_MPI_TEST_EXE = os.path.join(IR_OUTDIR, "IR_dsl_mpi_test.exe")
+
 LOGDIR = os.path.join(WORKDIR, "logs")
 os.makedirs(LOGDIR, exist_ok=True)
 
@@ -309,11 +314,13 @@ def _missing_mpi_prerequisite():
     return None
 
 
-def _build_gin_mpi_binary():
+def _build_gin_mpi_binary(src=GIN_MPI_TEST_SRC, exe=GIN_MPI_TEST_EXE, device_lib=BITCODE,
+                          log_name="ir_gin_mpi_build.log"):
     """Compile IR_gin_mpi_test.cpp into an MPI GoogleTest binary.
 
     Same device-side bitcode link as IR_test (-Xoffload-linker librccl_device.bc
     + amdgpu-internalize-symbols=false), plus the host RCCL library and MPI.
+    src/exe/device_lib select another MPI test and the bitcode it links.
     Returns the build log path; raises on failure.
     """
     os.makedirs(IR_OUTDIR, exist_ok=True)
@@ -331,22 +338,23 @@ def _build_gin_mpi_binary():
         f"--offload-arch={ARCH}", "-O0",
         "-D__HIP_PLATFORM_AMD__=1",
         f"-I{IR_DIR}",
+        # A --rocshmem-gin build stages the rocSHMEM GDA headers that nccl_device.h reaches only here.
+        f"-I{GENERATED_INC}",
         f"-I{HIPIFY_INC}",
         f"-I{os.path.join(HIPIFY_INC, 'nccl_device')}",
-        f"-I{GENERATED_INC}",
         f"-I{gtest_inc}",
         f"-I{os.path.join(ROCM_PATH, 'include')}",
-        GIN_MPI_TEST_SRC,
-        "-Xoffload-linker", BITCODE,
+        src,
+        "-Xoffload-linker", device_lib,
         "-Xoffload-linker", "-plugin-opt=-amdgpu-internalize-symbols=false",
         f"-L{gtest_libdir}", "-lgtest_main", "-lgtest", "-lpthread",
         f"-L{rccl_libdir}", f"-Wl,-rpath,{rccl_libdir}", "-lrccl",
         f"-L{os.path.join(ROCM_PATH, 'lib')}", "-lamdhip64",
-        "-o", GIN_MPI_TEST_EXE,
+        "-o", exe,
     ]
     env = os.environ.copy()
     env.update({"OMPI_CXX": AMDCLANGPP, "MPICH_CXX": AMDCLANGPP})
-    build_log = os.path.join(LOGDIR, "ir_gin_mpi_build.log")
+    build_log = os.path.join(LOGDIR, log_name)
     with open(build_log, "w") as log:
         log.write("$ " + " ".join(args) + "\n\n")
         log.flush()
@@ -355,10 +363,10 @@ def _build_gin_mpi_binary():
             stderr=subprocess.STDOUT, universal_newlines=True,
         )
     assert proc.returncode == 0, (
-        f"Failed to compile IR_gin_mpi_test (see {build_log})"
+        f"Failed to compile {os.path.basename(src)} (see {build_log})"
     )
-    assert os.path.isfile(GIN_MPI_TEST_EXE), (
-        f"MPI test binary not produced at {GIN_MPI_TEST_EXE}"
+    assert os.path.isfile(exe), (
+        f"MPI test binary not produced at {exe}"
     )
     return build_log
 
@@ -382,9 +390,8 @@ def ir_gin_mpi_binary():
     return GIN_MPI_TEST_EXE
 
 
-@pytest.fixture(scope="session")
-def run_gin_mpi_gtest(ir_gin_mpi_binary):
-    """Return a helper that launches the MPI GIN test under `mpirun -np N`.
+def _make_mpi_runner(binary):
+    """Return a helper that launches the MPI test `binary` under `mpirun -np N`.
 
     The helper returns (subprocess.CompletedProcess, log_file_path). GIN env
     defaults (NCCL_GIN_TYPE=2, NCCL_CUMEM_ENABLE=1, RCCL_ENABLE_INTRANET=1) are
@@ -408,7 +415,7 @@ def run_gin_mpi_gtest(ir_gin_mpi_binary):
         env["HIP_VISIBLE_DEVICES"] = IR_GIN_GPUS
         args = [
             "mpirun", "-np", str(NRANKS),
-            ir_gin_mpi_binary,
+            binary,
             f"--gtest_filter={gtest_filter}", "--gtest_color=no",
         ]
         log_file = os.path.join(LOGDIR, log_name)
@@ -422,6 +429,34 @@ def run_gin_mpi_gtest(ir_gin_mpi_binary):
         return proc, log_file
 
     return _run
+
+
+@pytest.fixture(scope="session")
+def run_gin_mpi_gtest(ir_gin_mpi_binary):
+    """Launch the MPI GIN test under `mpirun -np N` (see _make_mpi_runner)."""
+    return _make_mpi_runner(ir_gin_mpi_binary)
+
+
+@pytest.fixture(scope="session")
+def dsl_bitcode():
+    """Update the bitcode libraries and return the path of librccl_device_dsl.bc."""
+    reason = _missing_static_prerequisite()
+    if reason:
+        pytest.skip(f"DSL bitcode tests skipped: {reason}")
+    _build_bitcode()
+    assert os.path.isfile(DSL_BITCODE), f"librccl_device_dsl.bc not produced at {DSL_BITCODE}"
+    return DSL_BITCODE
+
+
+@pytest.fixture(scope="session")
+def run_dsl_mpi_gtest(dsl_bitcode):
+    """Build IR_dsl_mpi_test.cpp against librccl_device_dsl.bc and return its MPI runner."""
+    reason = _missing_mpi_prerequisite()
+    if reason:
+        pytest.skip(f"DSL multi-rank tests skipped: {reason}")
+    _build_gin_mpi_binary(src=DSL_MPI_TEST_SRC, exe=DSL_MPI_TEST_EXE, device_lib=dsl_bitcode,
+                          log_name="ir_dsl_mpi_build.log")
+    return _make_mpi_runner(DSL_MPI_TEST_EXE)
 
 
 @pytest.fixture(scope="session")

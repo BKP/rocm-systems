@@ -1,0 +1,1 @@
+* `librccl_device_dsl.bc`: with `NCCL_EMIT_LLVM_IR=ON`, RCCL also builds and installs a bitcode library of device API entry points whose arguments are all integer scalars, for DSLs whose foreign-function interface passes only scalars, such as FlyDSL. It is built for `BITCODE_LIB_ARCH` with code object version 6, and `bindings/ir/nccl_device_dsl.h` declares its functions.

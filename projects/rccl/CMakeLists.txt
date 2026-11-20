@@ -953,6 +953,7 @@ if(NCCL_EMIT_LLVM_IR OR NCCL_EMIT_LTO_IR)
 endif()
 if(NCCL_EMIT_LLVM_IR)
   rocm_install(FILES       ${PROJECT_BINARY_DIR}/lib/librccl_device.bc
+                           ${PROJECT_BINARY_DIR}/lib/librccl_device_dsl.bc
                DESTINATION ${CMAKE_INSTALL_LIBDIR}/rccl)
 endif()
 if(NCCL_EMIT_LTO_IR)

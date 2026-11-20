@@ -303,9 +303,25 @@ add_custom_command(
   VERBATIM
 )
 
+##### Scalar-argument entry points for DSLs -> librccl_device_dsl.bc #####
+# A separate artifact: the thunks above are `used`, so a consumer that links librccl_device.bc compiles all of
+# them. -fgpu-rdc keeps these definitions without `used`, so a consumer links only the ones it calls. DSL JITs
+# ship upstream LLVM, which has no llvm.amdgcn.global.{load,store}.b128, and emit code object version 6.
+set(DSL_SRC ${CMAKE_CURRENT_SOURCE_DIR}/nccl_device_dsl__impl.h)
+set(FINAL_DSL_BC ${LIBDIR}/librccl_device_dsl.bc)
+add_custom_command(
+  OUTPUT ${FINAL_DSL_BC}
+  COMMAND ${CMAKE_COMMAND} -E make_directory ${LIBDIR}
+  COMMAND ${CLANG_EXECUTABLE} -c -emit-llvm -O2 -fgpu-rdc -mcode-object-version=6 -DDWORDX4_INTRINSICS_FORCE_OFF
+          ${COMMON_CLANG_FLAGS} ${DSL_SRC} -o ${FINAL_DSL_BC}
+  DEPENDS ${DSL_SRC} ${CMAKE_CURRENT_SOURCE_DIR}/nccl_device_dsl.h
+  COMMENT "Generating librccl_device_dsl.bc for ${BITCODE_LIB_ARCH}..."
+  VERBATIM
+)
+
 ##### Public target #####
 add_custom_target(llvm_ir
-  DEPENDS ${FINAL_BC} ${OPTIMIZED_BC}
+  DEPENDS ${FINAL_BC} ${OPTIMIZED_BC} ${FINAL_DSL_BC}
   COMMENT "RCCL LLVM IR / bitcode generation"
 )
 add_dependencies(llvm_ir nccl_device_wrapper_header)

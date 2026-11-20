@@ -71,6 +71,7 @@ pytest -v --cache-clear
 pytest -v -m peer_pointer
 pytest -v -m coop
 pytest -v -m lsa_barrier
+pytest -v -m dsl          # librccl_device_dsl.bc: ABI checks and IR_dsl_mpi_test.cpp
 ```
 
 Build and per-test logs are written to `logs/`.
