@@ -20,11 +20,15 @@ build tree.
 | File | Topic | Ranks | Needs |
 |---|---|---|---|
 | `01_gin_put.py` | 1 MiB `Gin.put` with a weak signal, waited on by the peer's kernel | **exactly 2** | GIN |
+| `02_lsa_put.py` | The kernel stores into a peer's window through `Window.lsa_ptr` | **exactly 2**, one node | peer access |
+| `03_lsa_allreduce.py` | Device-side all-reduce: `Window.lsa_ptr` reads plus LSA barriers | >=2, one node | peer access |
 
 Run under MPI, one rank per GPU:
 
 ```sh
 NCCL_CUMEM_ENABLE=1 NCCL_GIN_TYPE=7 mpirun -n 2 python 01_gin_put.py   # Anvil SDMA, one node
+NCCL_CUMEM_ENABLE=1                 mpirun -n 2 python 02_lsa_put.py
+NCCL_CUMEM_ENABLE=1                 mpirun -n 8 python 03_lsa_allreduce.py
 ```
 
 `NCCL_GIN_TYPE` selects the GIN backend for `01_gin_put.py`: `7` for Anvil

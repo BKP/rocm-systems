@@ -5,11 +5,11 @@
 
 """Device-side handles for ``@flyc.kernel`` code.
 
-``DevComm`` and ``Gin`` are FlyDSL structs carrying one ``Int64`` each, so a
-handle built once at kernel entry flows through ``scf.if`` and ``scf.for``.
-``coop``, ``signal`` and ``team`` select the entry point at trace time and must
-be Python ints (the enum members); a ``Gin``'s context is a compile-time
-constant too.
+``DevComm``, ``Gin`` and ``Window`` are FlyDSL structs carrying one ``Int64``
+each, so a handle built once at kernel entry flows through ``scf.if`` and
+``scf.for``. ``coop``, ``signal`` and ``team`` select the entry point at trace
+time and must be Python ints (the enum members); a ``Gin``'s context is a
+compile-time constant too.
 """
 
 import flydsl.expr as fx
@@ -33,6 +33,25 @@ def _coop(coop) -> str:
 
 def _team(team, allowed=tuple(Team)) -> int:
     return _const(team, "team", allowed)
+
+
+@fx.struct
+class Window:
+    """Handle for an ``ncclWindow_t``."""
+
+    handle: fx.Int64
+
+    def local_ptr(self, offset=0):
+        """Address of ``offset`` in this rank's part of the window."""
+        return FUNCTIONS["ncclDslGetLocalPointer"](self.handle, offset)
+
+    def lsa_ptr(self, lsa_peer, offset=0):
+        """Address of ``offset`` in the window of LSA rank ``lsa_peer``, for loads and stores."""
+        return FUNCTIONS["ncclDslGetLsaPointer"](self.handle, offset, lsa_peer)
+
+    def peer_ptr(self, peer, offset=0):
+        """Address of ``offset`` in world rank ``peer``'s window; 0 if not load/store reachable."""
+        return FUNCTIONS["ncclDslGetPeerPointer"](self.handle, offset, peer)
 
 
 @fx.struct
@@ -146,5 +165,29 @@ class DevComm:
         """GIN context ``ctx``, a compile-time constant."""
         return Gin(dev_comm=self.ptr, ctx=_const(ctx, "ctx", range(1 << 31)))
 
+    def lsa_barrier_sync(self, index, *, coop=Coop.CTA):
+        """Barrier ``index`` of the LSA team: arrive, then wait for every LSA peer."""
+        FUNCTIONS[f"ncclDslLsaBarrierSync_{_coop(coop)}"](self.ptr, index)
 
-__all__ = ["DevComm", "Gin"]
+    def lsa_barrier_arrive(self, index, *, coop=Coop.CTA):
+        """Signal arrival at LSA barrier ``index`` without waiting."""
+        FUNCTIONS[f"ncclDslLsaBarrierArrive_{_coop(coop)}"](self.ptr, index)
+
+    def lsa_barrier_wait(self, index, *, coop=Coop.CTA):
+        """Wait for every LSA peer to arrive at barrier ``index``."""
+        FUNCTIONS[f"ncclDslLsaBarrierWait_{_coop(coop)}"](self.ptr, index)
+
+    def gin_barrier_sync(self, index, *, ctx=0, team=Team.WORLD, coop=Coop.CTA):
+        """GIN barrier ``index`` over ``team`` (``WORLD`` or ``RAIL``) on context ``ctx``."""
+        FUNCTIONS[f"ncclDslGinBarrierSync_{_coop(coop)}"](
+            self.ptr, ctx, _team(team, (Team.WORLD, Team.RAIL)), index
+        )
+
+    def barrier_sync(self, index, *, ctx=0, team=Team.WORLD, coop=Coop.CTA):
+        """LSA plus GIN barrier ``index`` over ``team`` (``WORLD`` or ``RAIL``), context ``ctx``."""
+        FUNCTIONS[f"ncclDslBarrierSync_{_coop(coop)}"](
+            self.ptr, ctx, _team(team, (Team.WORLD, Team.RAIL)), index
+        )
+
+
+__all__ = ["DevComm", "Gin", "Window"]

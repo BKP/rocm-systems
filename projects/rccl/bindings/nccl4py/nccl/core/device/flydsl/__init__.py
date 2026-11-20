@@ -5,7 +5,7 @@
 
 """FlyDSL bindings for the RCCL device API.
 
-``@flyc.kernel`` code calls GIN operations from
+``@flyc.kernel`` code calls GIN, LSA and barrier operations from
 ``librccl_device_dsl.bc``, which RCCL builds with ``-DNCCL_EMIT_LLVM_IR=ON``.
 Requires FlyDSL 0.5 or later. Handles cross the kernel boundary as ``Int64``::
 
@@ -31,7 +31,7 @@ except ImportError as e:
 
 from ._abi import Coop, Signal, Team
 from ._bindings import bitcode_path
-from .handles import DevComm, Gin
+from .handles import DevComm, Gin, Window
 from .runtime import DeviceComm, device_comm
 
 __all__ = [
@@ -41,6 +41,7 @@ __all__ = [
     "Gin",
     "Signal",
     "Team",
+    "Window",
     "bitcode_path",
     "device_comm",
 ]
