@@ -10,6 +10,8 @@ import pytest
 _CASES = [
     "BuildInfo",
     "DevCommAccessors",
+    "GinPutAndSignal",
+    "GinFlushAsyncWait",
 ]
 
 
