@@ -1,0 +1,1 @@
+* `nccl.core.device.flydsl`: FlyDSL bindings for the device API (GIN, LSA pointers and barriers) in nccl4py, linking `librccl_device_dsl.bc`. `RCCL_DEVICE_DSL_BC` overrides the path of that bitcode, which is otherwise found next to the loaded `librccl.so`.

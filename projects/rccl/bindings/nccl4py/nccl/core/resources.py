@@ -15,6 +15,7 @@ from __future__ import annotations
 from abc import ABC, abstractmethod
 from dataclasses import dataclass
 
+from nccl._hip_compat.cuda_core_shim._hip import check_hip, hip
 from nccl.bindings import nccl as _nccl_bindings
 from nccl.core._binding_helpers import LowppView
 from nccl.core.constants import WindowFlag
@@ -606,6 +607,7 @@ class DevCommResource(CommResource):
         self._team_multimem_lowpp = team_multimem_lowpp or {}
         self._resource_handle_lowpps = resource_handle_lowpps or ()
         self._dev_comm = None
+        self._device_ptr = 0
         super().__init__(comm)
         # reqs_lowpp is only needed for the create call; drop it afterwards so we
         # don't retain a struct whose linked-list pointers dangle once the
@@ -622,6 +624,9 @@ class DevCommResource(CommResource):
 
     def _deallocate(self) -> None:
         """Destroys the device communicator via ncclDevCommDestroy."""
+        if self._device_ptr:
+            check_hip(hip.hipFree(self._device_ptr), "hipFree")
+            self._device_ptr = 0
         if self._dev_comm is not None:
             _nccl_bindings.dev_comm_destroy(self._comm, self._dev_comm.ptr)
             self._dev_comm = None
@@ -647,6 +652,26 @@ class DevCommResource(CommResource):
             RuntimeError: If the device communicator has been destroyed.
         """
         return self.dev_comm.ptr
+
+    # [RCCL] Not in upstream nccl4py; used by nccl.core.device.flydsl.
+    @property
+    def device_ptr(self) -> int:
+        """Device address of a copy of the :c:type:`ncclDevComm_t <ncclDevComm>`,
+        for kernels that take it by pointer rather than by value.
+
+        Made on first access and freed with this resource. Device code only
+        reads it.
+
+        Raises:
+            RuntimeError: If the device communicator has been destroyed.
+        """
+        if not self._device_ptr:
+            size = _nccl_bindings.dev_comm_dtype.itemsize
+            ptr = int(check_hip(hip.hipMalloc(size), "hipMalloc"))
+            copy = hip.hipMemcpyKind.hipMemcpyHostToDevice
+            check_hip(hip.hipMemcpy(ptr, self.ptr, size, copy), "hipMemcpy")
+            self._device_ptr = ptr
+        return self._device_ptr
 
     def multimem_handle(self, team: NCCLTeam) -> MultimemHandle:
         """Returns the multimem handle requested for ``team``.
