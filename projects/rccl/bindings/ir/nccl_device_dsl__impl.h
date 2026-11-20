@@ -131,4 +131,48 @@ NCCL_DSL_API int ncclDslGinResetSignal(uint64_t devComm, int context, uint32_t s
   return 0;
 }
 
+NCCL_DSL_API uint64_t ncclDslGetLocalPointer(uint64_t window, uint64_t offset) {
+  return reinterpret_cast<uint64_t>(ncclGetLocalPointer(ncclDslWindow(window), offset));
+}
+NCCL_DSL_API uint64_t ncclDslGetLsaPointer(uint64_t window, uint64_t offset, int lsaPeer) {
+  return reinterpret_cast<uint64_t>(ncclGetLsaPointer(ncclDslWindow(window), offset, lsaPeer));
+}
+NCCL_DSL_API uint64_t ncclDslGetPeerPointer(uint64_t window, uint64_t offset, int peer) {
+  return reinterpret_cast<uint64_t>(ncclGetPeerPointer(ncclDslWindow(window), offset, peer));
+}
+
+// LSA sessions load their epoch on construction and store it on destruction, so a session per call keeps
+// consecutive calls with the same index in step.
+#define NCCL_DSL_DEFINE_BARRIERS(_, COOP) \
+  NCCL_DSL_API int ncclDslLsaBarrierSync_##COOP(uint64_t devComm, uint32_t index) { \
+    ncclLsaBarrierSession<ncclCoop##COOP> bar(ncclCoop##COOP{}, ncclDslComm(devComm), ncclTeamTagLsa{}, index); \
+    bar.sync(ncclCoop##COOP{}, cuda::memory_order_acq_rel); \
+    return 0; \
+  } \
+  NCCL_DSL_API int ncclDslLsaBarrierArrive_##COOP(uint64_t devComm, uint32_t index) { \
+    ncclLsaBarrierSession<ncclCoop##COOP> bar(ncclCoop##COOP{}, ncclDslComm(devComm), ncclTeamTagLsa{}, index); \
+    bar.arrive(ncclCoop##COOP{}, cuda::memory_order_release); \
+    return 0; \
+  } \
+  NCCL_DSL_API int ncclDslLsaBarrierWait_##COOP(uint64_t devComm, uint32_t index) { \
+    ncclLsaBarrierSession<ncclCoop##COOP> bar(ncclCoop##COOP{}, ncclDslComm(devComm), ncclTeamTagLsa{}, index); \
+    bar.wait(ncclCoop##COOP{}, cuda::memory_order_acquire); \
+    return 0; \
+  } \
+  NCCL_DSL_API int ncclDslGinBarrierSync_##COOP(uint64_t devComm, int context, uint32_t flags, uint32_t index) { \
+    ncclGin gin(ncclDslComm(devComm), context); \
+    if (flags == ncclDslTeamWorld) ncclGinBarrier(ncclCoop##COOP{}, gin, ncclTeamTagWorld{}, index); \
+    else if (flags == ncclDslTeamRail) ncclGinBarrier(ncclCoop##COOP{}, gin, ncclTeamTagRail{}, index); \
+    else __builtin_trap(); \
+    return 0; \
+  } \
+  NCCL_DSL_API int ncclDslBarrierSync_##COOP(uint64_t devComm, int context, uint32_t flags, uint32_t index) { \
+    ncclGin gin(ncclDslComm(devComm), context); \
+    if (flags == ncclDslTeamWorld) ncclBarrier(ncclCoop##COOP{}, ncclTeamTagWorld{}, gin, index); \
+    else if (flags == ncclDslTeamRail) ncclBarrier(ncclCoop##COOP{}, ncclTeamTagRail{}, gin, index); \
+    else __builtin_trap(); \
+    return 0; \
+  }
+NCCL_DSL_COOPS(NCCL_DSL_DEFINE_BARRIERS, _)
+
 #endif // _NCCL_DEVICE_DSL__IMPL_H_

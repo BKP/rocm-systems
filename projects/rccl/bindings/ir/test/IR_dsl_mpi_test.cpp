@@ -27,6 +27,7 @@ constexpr int kThreads = 256;
 constexpr size_t kChunk = 4096;
 constexpr int kSlots = 32;
 constexpr uint64_t kAddValue = 5;
+constexpr int kIters = 16;
 
 enum Coop {
   kThread,
@@ -151,6 +152,45 @@ __global__ void flushAsyncKernel(uint64_t dc, uint64_t dstWin, uint64_t srcWin, 
   if (threadIdx.x == 0) ncclDslGinSignal_Thread_StrongSignalInc(dc, 0, ncclDslTeamWorld, 1, coop, 0);
 }
 
+__global__ void pointerKernel(uint64_t window, int lsaPeer, int peer, uint64_t* out) {
+  ncclWindow_t w = reinterpret_cast<ncclWindow_t>(window);
+  out[0] = ncclDslGetLocalPointer(window, 64) == reinterpret_cast<uint64_t>(ncclGetLocalPointer(w, 64));
+  out[1] = ncclDslGetLsaPointer(window, 64, lsaPeer) == reinterpret_cast<uint64_t>(ncclGetLsaPointer(w, 64, lsaPeer));
+  out[2] = ncclDslGetPeerPointer(window, 64, peer) == reinterpret_cast<uint64_t>(ncclGetPeerPointer(w, 64, peer));
+}
+
+__global__ void lsaStoreKernel(uint64_t window, int lsaPeer, uint64_t value) {
+  *reinterpret_cast<uint64_t*>(ncclDslGetLsaPointer(window, 0, lsaPeer)) = value;
+}
+
+__global__ void lsaBarrierKernel(uint64_t dc, int coop) {
+  if (!inCoop(coop)) return;
+#define LSA_SYNC(COOP) ncclDslLsaBarrierSync_##COOP(dc, 0)
+#define LSA_ARRIVE(COOP) ncclDslLsaBarrierArrive_##COOP(dc, 0)
+#define LSA_WAIT(COOP) ncclDslLsaBarrierWait_##COOP(dc, 0)
+  for (int i = 0; i < kIters; i++) {
+    if (i % 2) {
+      COOP_SWITCH(coop, LSA_ARRIVE)
+      COOP_SWITCH(coop, LSA_WAIT)
+    } else {
+      COOP_SWITCH(coop, LSA_SYNC)
+    }
+  }
+}
+
+__global__ void ginBarrierKernel(uint64_t dc, int coop, uint32_t team, bool composite) {
+  if (!inCoop(coop)) return;
+#define GIN_BARRIER(COOP) ncclDslGinBarrierSync_##COOP(dc, 0, team, 0)
+#define BARRIER(COOP) ncclDslBarrierSync_##COOP(dc, 0, team, 0)
+  for (int i = 0; i < kIters; i++) {
+    if (composite) {
+      COOP_SWITCH(coop, BARRIER)
+    } else {
+      COOP_SWITCH(coop, GIN_BARRIER)
+    }
+  }
+}
+
 } // namespace
 
 class IRDslMPITest : public ::testing::Test {
@@ -192,10 +232,13 @@ protected:
     ok = ok && ncclCommWindowRegister(comm_, src_, kSlots * kChunk, &srcWin_, NCCL_WIN_COLL_SYMMETRIC) == ncclSuccess;
     ok = ok && ncclCommWindowRegister(comm_, dst_, kSlots * kChunk, &dstWin_, NCCL_WIN_COLL_SYMMETRIC) == ncclSuccess;
     ncclDevCommRequirements reqs = NCCL_DEV_COMM_REQUIREMENTS_INITIALIZER;
+    reqs.lsaBarrierCount = 1;
     if (gin) {
       reqs.ginConnectionType = NCCL_GIN_CONNECTION_FULL;
       reqs.ginSignalCount = kSlots;
       reqs.ginStrongSignalsRequired = true;
+      reqs.railGinBarrierCount = 1;
+      reqs.worldGinBarrierCount = 1;
     }
     devCommValid_ = ok && ncclDevCommCreate(comm_, &reqs, &devComm_) == ncclSuccess;
     ok = devCommValid_ && hipMalloc(&dc_, sizeof(ncclDevComm)) == hipSuccess &&
@@ -291,6 +334,52 @@ TEST_F(IRDslMPITest, GinFlushAsyncWait) {
   }
   HIP_EXPECT(hipFree(request));
   HIP_EXPECT(hipFree(seen));
+}
+
+TEST_F(IRDslMPITest, LsaPointers) {
+  if (!createDevComm(false)) GTEST_SKIP() << "ncclDevCommCreate failed";
+  uint64_t* out = nullptr;
+  ASSERT_EQ(hipMallocManaged(&out, 3 * sizeof(uint64_t)), hipSuccess);
+  int lsaPeer = devComm_.lsaSize - 1 - devComm_.lsaRank;
+  pointerKernel<<<1, 1>>>(win(dstWin_), lsaPeer, 1 - rank_, out);
+  HIP_EXPECT(hipDeviceSynchronize());
+  EXPECT_EQ(out[0], 1u) << "local pointer";
+  EXPECT_EQ(out[1], 1u) << "LSA pointer";
+  EXPECT_EQ(out[2], 1u) << "peer pointer";
+  if (allRanks(devComm_.lsaSize == 2)) {
+    HIP_EXPECT(hipMemset(dst_, 0, kChunk));
+    MPI_Barrier(MPI_COMM_WORLD);
+    lsaStoreKernel<<<1, 1>>>(win(dstWin_), lsaPeer, 0xC0FFEE00u + rank_);
+    HIP_EXPECT(hipDeviceSynchronize());
+    MPI_Barrier(MPI_COMM_WORLD);
+    uint64_t got = 0;
+    HIP_EXPECT(hipMemcpy(&got, dst_, sizeof(got), hipMemcpyDeviceToHost));
+    EXPECT_EQ(got, 0xC0FFEE00u + (1 - rank_));
+  }
+  HIP_EXPECT(hipFree(out));
+}
+
+TEST_F(IRDslMPITest, LsaBarrier) {
+  if (!createDevComm(false)) GTEST_SKIP() << "ncclDevCommCreate failed";
+  for (int coop = kThread; coop <= kCta; coop++) {
+    lsaBarrierKernel<<<1, kThreads>>>(dc(), coop);
+    EXPECT_EQ(hipDeviceSynchronize(), hipSuccess) << "coop " << coop;
+    MPI_Barrier(MPI_COMM_WORLD);
+  }
+}
+
+TEST_F(IRDslMPITest, GinBarriers) {
+  if (!createDevComm(true)) GTEST_SKIP() << "GIN ncclDevCommCreate with strong signals failed";
+  for (int composite = 0; composite <= 1; composite++) {
+    for (uint32_t team : {ncclDslTeamWorld, ncclDslTeamRail}) {
+      for (int coop = kThread; coop <= kCta; coop++) {
+        ginBarrierKernel<<<1, kThreads>>>(dc(), coop, team, composite);
+        EXPECT_EQ(hipDeviceSynchronize(), hipSuccess)
+          << "composite " << composite << " team " << team << " coop " << coop;
+        MPI_Barrier(MPI_COMM_WORLD);
+      }
+    }
+  }
 }
 
 namespace {

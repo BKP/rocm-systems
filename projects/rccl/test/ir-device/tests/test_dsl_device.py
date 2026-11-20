@@ -12,6 +12,9 @@ _CASES = [
     "DevCommAccessors",
     "GinPutAndSignal",
     "GinFlushAsyncWait",
+    "LsaPointers",
+    "LsaBarrier",
+    "GinBarriers",
 ]
 
 

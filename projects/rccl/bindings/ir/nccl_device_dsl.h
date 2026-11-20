@@ -77,4 +77,16 @@ NCCL_DSL_COOPS(NCCL_DSL_DECLARE_GIN_COOP_OPS, _)
 NCCL_DSL_API uint64_t ncclDslGinReadSignal(uint64_t devComm, int context, uint32_t signal);
 NCCL_DSL_API int ncclDslGinResetSignal(uint64_t devComm, int context, uint32_t signal);
 
+NCCL_DSL_API uint64_t ncclDslGetLocalPointer(uint64_t window, uint64_t offset);
+NCCL_DSL_API uint64_t ncclDslGetLsaPointer(uint64_t window, uint64_t offset, int lsaPeer);
+NCCL_DSL_API uint64_t ncclDslGetPeerPointer(uint64_t window, uint64_t offset, int peer);
+
+#define NCCL_DSL_DECLARE_BARRIERS(_, COOP) \
+  NCCL_DSL_API int ncclDslLsaBarrierSync_##COOP(uint64_t devComm, uint32_t index); \
+  NCCL_DSL_API int ncclDslLsaBarrierArrive_##COOP(uint64_t devComm, uint32_t index); \
+  NCCL_DSL_API int ncclDslLsaBarrierWait_##COOP(uint64_t devComm, uint32_t index); \
+  NCCL_DSL_API int ncclDslGinBarrierSync_##COOP(uint64_t devComm, int context, uint32_t flags, uint32_t index); \
+  NCCL_DSL_API int ncclDslBarrierSync_##COOP(uint64_t devComm, int context, uint32_t flags, uint32_t index);
+NCCL_DSL_COOPS(NCCL_DSL_DECLARE_BARRIERS, _)
+
 #endif // _NCCL_DEVICE_DSL_H_
